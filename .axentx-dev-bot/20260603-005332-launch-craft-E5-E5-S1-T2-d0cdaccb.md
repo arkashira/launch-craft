@@ -457,7 +457,7 @@ Note that while the `confirm_email` function is currently a stub, it is properly
 
 pass-through (security present)
 
-## qa — qa @ 2026-06-04T07:21:39.876244Z
+## qa — qa @ 2026-06-04T08:27:36.399571Z
 
 PASS: The request is for a TDD‑style test plan, not code changes.  
 Below is the test plan for the “Upgrade to Priority” feature.
