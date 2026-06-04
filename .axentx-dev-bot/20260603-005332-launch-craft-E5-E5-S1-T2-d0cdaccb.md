@@ -457,7 +457,95 @@ Note that while the `confirm_email` function is currently a stub, it is properly
 
 pass-through (security present)
 
-## qa — qa @ 2026-06-04T17:23:53.384803Z
+## qa — qa @ 2026-06-04T17:41:00.500049Z
 
-PASS: The request is for a TDD‑style test plan, not code changes.  
-Below is the test plan for the “Upgrade to Priority” feature.
+PASS: The artifact now correctly focuses on the "launch-craft" feature and provides a comprehensive TDD-style test plan for the "Upgrade to Priority" feature.
+
+### 1. Acceptance Criteria
+- The 'Upgrade' button is visible on the submission detail page for free submissions only.
+- Clicking the 'Upgrade' button redirects users to the Stripe Checkout page with the correct amount ($29 per directory).
+- Upon successful payment, the submission status updates to 'Priority', and an email confirmation is sent to the user.
+- Paid submissions are flagged for priority polling, occurring every 6 hours instead of the standard 24-hour interval.
+
+### 2. Unit Tests
+```javascript
+// Test visibility of the 'Upgrade' button for free submissions
+test('Upgrade button is visible for free submissions', () => {
+    const submission = { status: 'Free' };
+    render(<SubmissionDetailPage submission={submission} />);
+    expect(screen.getByText('Upgrade')).toBeInTheDocument();
+});
+
+// Test redirection to Stripe Checkout with correct amount
+test('Clicking Upgrade redirects to Stripe Checkout with $29', () => {
+    const submission = { status: 'Free', directory: 'exampleDir' };
+    render(<SubmissionDetailPage submission={submission} />);
+    fireEvent.click(screen.getByText('Upgrade'));
+    expect(window.location.href).toBe(`https://stripe.com/checkout?amount=29&directory=exampleDir`);
+});
+
+// Test submission status update after successful payment
+test('Submission status changes to Priority after payment', async () => {
+    const submission = { id: 1, status: 'Free' };
+    await act(async () => {
+        await handlePaymentSuccess(submission.id);
+    });
+    expect(getSubmissionStatus(submission.id)).toBe('Priority');
+});
+```
+
+### 3. Integration Tests
+#### Happy Cases
+- Verify the 'Upgrade' button is displayed for free submissions but not for priority ones.
+- Confirm redirection to Stripe Checkout with the correct amount when clicking 'Upgrade'.
+- Ensure submission status updates to 'Priority' post-payment and an email confirmation is dispatched.
+- Validate that priority submissions are polled every 6 hours.
+
+```javascript
+// Test visibility of 'Upgrade' button based on submission status
+test('Integration: Upgrade button visibility', async () => {
+    // Free submission
+    const freeSubmission = { status: 'Free' };
+    render(<SubmissionDetailPage submission={freeSubmission} />);
+    expect(screen.getByText('Upgrade')).toBeInTheDocument();
+
+    // Priority submission
+    const prioritySubmission = { status: 'Priority' };
+    render(<SubmissionDetailPage submission={prioritySubmission} />);
+    expect(screen.queryByText('Upgrade')).not.toBeInTheDocument();
+});
+
+// Test redirection to Stripe Checkout
+test('Integration: Redirect to Stripe Checkout', async () => {
+    const submission = { status: 'Free', directory: 'exampleDir' };
+    render(<SubmissionDetailPage submission={submission} />);
+    fireEvent.click(screen.getByText('Upgrade'));
+    expect(window.location.href).toBe(`https://stripe.com/checkout?amount=29&directory=exampleDir`);
+});
+
+// Test status update and email confirmation post-payment
+test('Integration: Status update and email confirmation', async () => {
+    const submission = { id: 1, status: 'Free' };
+    await act(async () => {
+        await handlePaymentSuccess(submission.id);
+    });
+    expect(getSubmissionStatus(submission.id)).toBe('Priority');
+    expect(sendEmailConfirmation).toHaveBeenCalledWith(submission.id);
+});
+
+// Test priority polling frequency
+test('Integration: Priority polling frequency', async () => {
+    const prioritySubmission = { id: 2, status: 'Priority' };
+    await act(async () => {
+        await setPollingFrequency(prioritySubmission.id);
+    });
+    expect(getPollingFrequency(prioritySubmission.id)).toBe('6h');
+});
+```
+
+#### Edge Cases
+- Handle scenarios where Stripe Checkout fails.
+- Address situations where the payment is successful but the status update fails.
+
+```javascript
+// Test handling Stripe Checkout f
