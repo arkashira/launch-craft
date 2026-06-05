@@ -457,95 +457,101 @@ Note that while the `confirm_email` function is currently a stub, it is properly
 
 pass-through (security present)
 
-## qa — qa @ 2026-06-04T17:41:00.500049Z
+## qa — qa @ 2026-06-05T00:32:11.616360Z
 
-PASS: The artifact now correctly focuses on the "launch-craft" feature and provides a comprehensive TDD-style test plan for the "Upgrade to Priority" feature.
+PASS: Providing a complete TDD‑style test plan for the **“Upgrade Free Submission → Paid Priority Submission”** feature.
 
-### 1. Acceptance Criteria
-- The 'Upgrade' button is visible on the submission detail page for free submissions only.
-- Clicking the 'Upgrade' button redirects users to the Stripe Checkout page with the correct amount ($29 per directory).
-- Upon successful payment, the submission status updates to 'Priority', and an email confirmation is sent to the user.
-- Paid submissions are flagged for priority polling, occurring every 6 hours instead of the standard 24-hour interval.
+---
 
-### 2. Unit Tests
-```javascript
-// Test visibility of the 'Upgrade' button for free submissions
-test('Upgrade button is visible for free submissions', () => {
-    const submission = { status: 'Free' };
-    render(<SubmissionDetailPage submission={submission} />);
-    expect(screen.getByText('Upgrade')).toBeInTheDocument();
-});
+## 1. Acceptance Criteria
+1. **Upgrade button visibility** – The “Upgrade” button appears only on submission detail pages where `submission.type == "free"` and the current user is the owner.
+2. **Redirect to Stripe Checkout** – Clicking the button initiates a POST to `/payments/checkout` and the response contains a Stripe Checkout URL with the exact amount **$29.00** (USD) and the correct `submission_id` in the metadata.
+3. **Successful payment handling** – After Stripe redirects back to `/payments/confirm?session_id=…`, the system verifies the session, updates the submission record:
+   - `submission.type` becomes `"priority"`.
+   - `submission.priority_flag = true`.
+   - `submission.review_interval` changes from **24 h** to **6 h**.
+4. **Email confirmation** – An email is sent to the submitter’s registered address containing:
+   - Subject: “Your listing is now a Priority submission”.
+   - Body includes the submission title, new review interval, and a receipt link.
+5. **Idempotent upgrade** – If a priority submission is accessed, the “Upgrade” button is hidden and no checkout is triggered.
+6. **Audit log entry** – A record is created in `audit_logs` with action `upgrade_to_priority`, user_id, submission_id, and timestamp.
+7. **Security** – The checkout request validates that the current user owns the submission; unauthorized attempts return **403 Forbidden**.
 
-// Test redirection to Stripe Checkout with correct amount
-test('Clicking Upgrade redirects to Stripe Checkout with $29', () => {
-    const submission = { status: 'Free', directory: 'exampleDir' };
-    render(<SubmissionDetailPage submission={submission} />);
-    fireEvent.click(screen.getByText('Upgrade'));
-    expect(window.location.href).toBe(`https://stripe.com/checkout?amount=29&directory=exampleDir`);
-});
+---
 
-// Test submission status update after successful payment
-test('Submission status changes to Priority after payment', async () => {
-    const submission = { id: 1, status: 'Free' };
-    await act(async () => {
-        await handlePaymentSuccess(submission.id);
-    });
-    expect(getSubmissionStatus(submission.id)).toBe('Priority');
-});
-```
+## 2. Unit Tests (pseudo‑code, Jest for Ruby on Rails API + RSpec style)
 
-### 3. Integration Tests
-#### Happy Cases
-- Verify the 'Upgrade' button is displayed for free submissions but not for priority ones.
-- Confirm redirection to Stripe Checkout with the correct amount when clicking 'Upgrade'.
-- Ensure submission status updates to 'Priority' post-payment and an email confirmation is dispatched.
-- Validate that priority submissions are polled every 6 hours.
+```ruby
+# spec/models/submission_spec.rb
+RSpec.describe Submission, type: :model do
+  describe '#upgrade_to_priority!' do
+    let(:submission) { create(:submission, :free, user: user) }
+    let(:user) { create(:user) }
 
-```javascript
-// Test visibility of 'Upgrade' button based on submission status
-test('Integration: Upgrade button visibility', async () => {
-    // Free submission
-    const freeSubmission = { status: 'Free' };
-    render(<SubmissionDetailPage submission={freeSubmission} />);
-    expect(screen.getByText('Upgrade')).toBeInTheDocument();
+    it 'sets type to priority and enables flag' do
+      submission.upgrade_to_priority!
+      expect(submission.type).to eq('priority')
+      expect(submission.priority_flag).to be true
+    end
 
-    // Priority submission
-    const prioritySubmission = { status: 'Priority' };
-    render(<SubmissionDetailPage submission={prioritySubmission} />);
-    expect(screen.queryByText('Upgrade')).not.toBeInTheDocument();
-});
+    it 'updates review interval to 6 hours' do
+      submission.upgrade_to_priority!
+      expect(submission.review_interval).to eq(6.hours)
+    end
 
-// Test redirection to Stripe Checkout
-test('Integration: Redirect to Stripe Checkout', async () => {
-    const submission = { status: 'Free', directory: 'exampleDir' };
-    render(<SubmissionDetailPage submission={submission} />);
-    fireEvent.click(screen.getByText('Upgrade'));
-    expect(window.location.href).toBe(`https://stripe.com/checkout?amount=29&directory=exampleDir`);
-});
+    it 'creates an audit log entry' do
+      expect { submission.upgrade_to_priority! }
+        .to change { AuditLog.count }.by(1)
+      log = AuditLog.last
+      expect(log.action).to eq('upgrade_to_priority')
+      expect(log.submission_id).to eq(submission.id)
+    end
+  end
+end
 
-// Test status update and email confirmation post-payment
-test('Integration: Status update and email confirmation', async () => {
-    const submission = { id: 1, status: 'Free' };
-    await act(async () => {
-        await handlePaymentSuccess(submission.id);
-    });
-    expect(getSubmissionStatus(submission.id)).toBe('Priority');
-    expect(sendEmailConfirmation).toHaveBeenCalledWith(submission.id);
-});
+# spec/controllers/payments_controller_spec.rb
+RSpec.describe PaymentsController, type: :controller do
+  let(:user) { create(:user) }
+  let(:submission) { create(:submission, :free, user: user) }
 
-// Test priority polling frequency
-test('Integration: Priority polling frequency', async () => {
-    const prioritySubmission = { id: 2, status: 'Priority' };
-    await act(async () => {
-        await setPollingFrequency(prioritySubmission.id);
-    });
-    expect(getPollingFrequency(prioritySubmission.id)).toBe('6h');
-});
-```
+  before { sign_in(user) }
 
-#### Edge Cases
-- Handle scenarios where Stripe Checkout fails.
-- Address situations where the payment is successful but the status update fails.
+  describe 'POST #checkout' do
+    it 'returns Stripe checkout URL with correct amount and metadata' do
+      post :checkout, params: { submission_id: submission.id }
+      expect(response).to have_http_status(:ok)
+      json = JSON.parse(response.body)
+      expect(json['checkout_url']).to include('stripe.com')
+      expect(json['amount']).to eq(2900) # cents
+      expect(json['metadata']['submission_id']).to eq(submission.id)
+    end
 
-```javascript
-// Test handling Stripe Checkout f
+    it 'rejects when user does not own submission' do
+      other = create(:submission, :free) # different owner
+      post :checkout, params: { submission_id: other.id }
+      expect(response).to have_http_status(:forbidden)
+    end
+  end
+
+  describe 'GET #confirm' do
+    let(:session_id) { 'cs_test_123' }
+
+    before do
+      allow(Stripe::Checkout::Session).to receive(:retrieve)
+        .with(session_id).and_return(double(
+          payment_status: 'paid',
+          metadata: { 'submission_id' => submission.id }
+        ))
+    end
+
+    it 'updates submission to priority and redirects to success page' do
+      get :confirm, params: { session_id: session_id }
+      expect(response).to redirect_to(submission_path(submission))
+      follow_redirect!
+      expect(submission.reload.type).to eq('priority')
+    end
+  end
+end
+
+# spec/mailers/submission_mailer_spec.rb
+RSpec.describe Submis
