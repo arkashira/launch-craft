@@ -457,101 +457,76 @@ Note that while the `confirm_email` function is currently a stub, it is properly
 
 pass-through (security present)
 
-## qa — qa @ 2026-06-05T00:32:11.616360Z
+## qa — qa @ 2026-06-05T02:06:12.195139Z
 
-PASS: Providing a complete TDD‑style test plan for the **“Upgrade Free Submission → Paid Priority Submission”** feature.
+PASS: The request is for a TDD-style test plan, not code changes. Below is the test plan for the “Upgrade to Priority” feature.
 
----
+## Acceptance Criteria
+* The 'Upgrade' button is visible on the submission detail page for free submissions.
+* Clicking the 'Upgrade' button redirects to Stripe Checkout with the correct amount ($29 per directory).
+* After successful payment, the submission status changes to 'Priority'.
+* An email confirmation is sent after a successful upgrade to a paid priority submission.
+* Paid submissions are flagged for priority polling (every 6h instead of 24h).
+* The upgrade button is not visible for submissions that are already priority or have been paid for.
+* The upgrade process handles errors and exceptions, such as failed payments or invalid submissions.
 
-## 1. Acceptance Criteria
-1. **Upgrade button visibility** – The “Upgrade” button appears only on submission detail pages where `submission.type == "free"` and the current user is the owner.
-2. **Redirect to Stripe Checkout** – Clicking the button initiates a POST to `/payments/checkout` and the response contains a Stripe Checkout URL with the exact amount **$29.00** (USD) and the correct `submission_id` in the metadata.
-3. **Successful payment handling** – After Stripe redirects back to `/payments/confirm?session_id=…`, the system verifies the session, updates the submission record:
-   - `submission.type` becomes `"priority"`.
-   - `submission.priority_flag = true`.
-   - `submission.review_interval` changes from **24 h** to **6 h**.
-4. **Email confirmation** – An email is sent to the submitter’s registered address containing:
-   - Subject: “Your listing is now a Priority submission”.
-   - Body includes the submission title, new review interval, and a receipt link.
-5. **Idempotent upgrade** – If a priority submission is accessed, the “Upgrade” button is hidden and no checkout is triggered.
-6. **Audit log entry** – A record is created in `audit_logs` with action `upgrade_to_priority`, user_id, submission_id, and timestamp.
-7. **Security** – The checkout request validates that the current user owns the submission; unauthorized attempts return **403 Forbidden**.
+## Unit Tests
+```javascript
+describe('Upgrade to Priority feature', () => {
+  it('renders the upgrade button for free submissions', () => {
+    const freeSubmission = { id: 1, status: 'free' };
+    const wrapper = renderSubmissionDetailPage(freeSubmission);
+    expect(wrapper.find('.upgrade-button')).toBeVisible();
+  });
 
----
+  it('hides the upgrade button for priority submissions', () => {
+    const prioritySubmission = { id: 1, status: 'priority' };
+    const wrapper = renderSubmissionDetailPage(prioritySubmission);
+    expect(wrapper.find('.upgrade-button')).not.toBeVisible();
+  });
 
-## 2. Unit Tests (pseudo‑code, Jest for Ruby on Rails API + RSpec style)
+  it('redirects to Stripe Checkout with the correct amount', () => {
+    const freeSubmission = { id: 1, status: 'free' };
+    const wrapper = renderSubmissionDetailPage(freeSubmission);
+    const upgradeButton = wrapper.find('.upgrade-button');
+    upgradeButton.simulate('click');
+    expect(window.location.href).toContain('stripe.com');
+    expect(window.location.href).toContain('amount=29');
+  });
 
-```ruby
-# spec/models/submission_spec.rb
-RSpec.describe Submission, type: :model do
-  describe '#upgrade_to_priority!' do
-    let(:submission) { create(:submission, :free, user: user) }
-    let(:user) { create(:user) }
+  it('updates the submission status to priority after successful payment', () => {
+    const freeSubmission = { id: 1, status: 'free' };
+    const paymentResponse = { status: 'success' };
+    const updatedSubmission = updateSubmissionStatus(freeSubmission, paymentResponse);
+    expect(updatedSubmission.status).toBe('priority');
+  });
 
-    it 'sets type to priority and enables flag' do
-      submission.upgrade_to_priority!
-      expect(submission.type).to eq('priority')
-      expect(submission.priority_flag).to be true
-    end
+  it('sends an email confirmation after a successful upgrade', () => {
+    const freeSubmission = { id: 1, status: 'free' };
+    const paymentResponse = { status: 'success' };
+    sendEmailConfirmation(freeSubmission, paymentResponse);
+    expect(emailService.send).toHaveBeenCalledTimes(1);
+  });
+});
+```
 
-    it 'updates review interval to 6 hours' do
-      submission.upgrade_to_priority!
-      expect(submission.review_interval).to eq(6.hours)
-    end
+## Integration Tests
+### Happy Path
+1. Test that a free submission can be upgraded to a priority submission with a successful payment.
+2. Test that the upgrade button is visible for free submissions and hidden for priority submissions.
+3. Test that the submission status is updated to priority after a successful payment.
+4. Test that an email confirmation is sent after a successful upgrade.
+5. Test that paid submissions are flagged for priority polling.
 
-    it 'creates an audit log entry' do
-      expect { submission.upgrade_to_priority! }
-        .to change { AuditLog.count }.by(1)
-      log = AuditLog.last
-      expect(log.action).to eq('upgrade_to_priority')
-      expect(log.submission_id).to eq(submission.id)
-    end
-  end
-end
+### Edge Cases
+1. Test that the upgrade process handles failed payments by not updating the submission status.
+2. Test that the upgrade process handles invalid submissions by displaying an error message.
+3. Test that the upgrade process handles expired or declined payments by displaying an error message.
 
-# spec/controllers/payments_controller_spec.rb
-RSpec.describe PaymentsController, type: :controller do
-  let(:user) { create(:user) }
-  let(:submission) { create(:submission, :free, user: user) }
-
-  before { sign_in(user) }
-
-  describe 'POST #checkout' do
-    it 'returns Stripe checkout URL with correct amount and metadata' do
-      post :checkout, params: { submission_id: submission.id }
-      expect(response).to have_http_status(:ok)
-      json = JSON.parse(response.body)
-      expect(json['checkout_url']).to include('stripe.com')
-      expect(json['amount']).to eq(2900) # cents
-      expect(json['metadata']['submission_id']).to eq(submission.id)
-    end
-
-    it 'rejects when user does not own submission' do
-      other = create(:submission, :free) # different owner
-      post :checkout, params: { submission_id: other.id }
-      expect(response).to have_http_status(:forbidden)
-    end
-  end
-
-  describe 'GET #confirm' do
-    let(:session_id) { 'cs_test_123' }
-
-    before do
-      allow(Stripe::Checkout::Session).to receive(:retrieve)
-        .with(session_id).and_return(double(
-          payment_status: 'paid',
-          metadata: { 'submission_id' => submission.id }
-        ))
-    end
-
-    it 'updates submission to priority and redirects to success page' do
-      get :confirm, params: { session_id: session_id }
-      expect(response).to redirect_to(submission_path(submission))
-      follow_redirect!
-      expect(submission.reload.type).to eq('priority')
-    end
-  end
-end
-
-# spec/mailers/submission_mailer_spec.rb
-RSpec.describe Submis
+## Risk Register
+* **Risk:** The Stripe Checkout integration may fail due to network issues or Stripe API downtime.
+* **Mitigation:** Implement retry logic for the Stripe Checkout integration and display an error message to the user if the integration fails.
+* **Detection:** Monitor the Stripe Checkout integration for errors and exceptions, and test the retry logic regularly.
+* **Risk:** The email confirmation may not be sent due to issues with the email service.
+* **Mitigation:** Implement a fallback email service and monitor the email service for errors and exceptions.
+* **Detection:** Monitor the email service for errors and exceptions, and test the email confirmation regularly.
