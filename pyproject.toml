@@ -1,0 +1,14 @@
+import argparse
+import json
+import sys
+
+from .core import submit_to_directory, list_product_in_directory
+
+
+def _print_json(data: Any) -> None:
+    """Pretty‑print JSON data to stdout."""
+    print(json.dumps(data, indent=2, ensure_ascii=False))
+
+
+def main() -> None:
+    parser =
